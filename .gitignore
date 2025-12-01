@@ -1,0 +1,22 @@
+# === 操作系统生成文件 ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# === 编辑器/IDE 配置文件 ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# === 本地日志与临时文件 ===
+*.log
+tmp/
+temp/
+
