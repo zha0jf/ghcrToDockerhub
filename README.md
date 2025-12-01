@@ -14,8 +14,8 @@
 
 请在 Settings -> Secrets -> Actions 中添加：
 
-*   `DOCKER_USERNAME`: 你的 Docker Hub 用户名。
-*   `DOCKER_PASSWORD`: 你的 Docker Hub Access Token。
+*   `DOCKERHUB_USERNAME`: 你的 Docker Hub 用户名。
+*   `DOCKERHUB_TOKEN`: 你的 Docker Hub Access Token。
 
 ## 🚀 使用方法
 
