@@ -92,18 +92,18 @@ jobs:
               # 准备长描述 (Overview / README)
               local readme_content="# GHCR Mirror: $repo_name
               
-              This repository is a transparent mirror synchronized from GitHub Container Registry (GHCR).
-              
-              ## Image Info
-              
-              - **Source Image**: \`$source_img\`
-              - **Original Tag**: \`$original_tag\`
-              - **Mirror Image**: \`$target_img\`
-              - **Architectures**: \`amd64\`, \`arm64\`
-              - **Sync Time**: $(date -u) UTC
-              
-              ---
-              *Powered by GitHub Actions*"
+This repository is a transparent mirror synchronized from GitHub Container Registry (GHCR).
+
+## Image Info
+
+- **Source Image**: \`$source_img\`
+- **Original Tag**: \`$original_tag\`
+- **Mirror Image**: \`$target_img\`
+- **Architectures**: \`amd64\`, \`arm64\`
+- **Sync Time**: $(date -u) UTC
+
+---
+*Powered by GitHub Actions*"
 
               # 使用 jq 构建 JSON，确保 Markdown 转义正确
               local json_payload=$(jq -n \
