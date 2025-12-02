@@ -6,15 +6,15 @@ on:
     branches:
       - main
     paths:
-      - 'source_images/*'
-      - '.github/workflows/**'
+      - 'source_images/*'        # 当源映像列表文件修改时触发
+      - '.github/workflows/**'   # 当 Workflow 脚本修改时触发
 
 jobs:
   push_multiarch_images:
     name: Sync amd64/arm64 images
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 允许提交状态文件
 
     steps:
       - name: Check out the repo
@@ -26,6 +26,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 登录用于推送镜像
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -38,31 +39,57 @@ jobs:
           DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
+          # === 配置区域 ===
           SOURCE_DIR="source_images"
           STATE_DIR="pushed_state"
           PLATFORMS="linux/amd64,linux/arm64"
           REPO_PREFIX="ghcr-" 
+          # ================
 
           mkdir -p $STATE_DIR
 
-          echo "🔑 Authenticating with Docker Hub API..."
-          HUB_TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d "{\"username\": \"$DOCKER_USER\", \"password\": \"$DOCKER_PASSWORD\"}" https://hub.docker.com/v2/users/login | jq -r .token)
+          # -------------------------------------------------------
+          # 1. 获取 Docker Hub API Token (用于更新 README)
+          # -------------------------------------------------------
+          echo "🔑 1. Getting Docker Hub JWT Token..."
           
-          if [ "$HUB_TOKEN" == "null" ] || [ -z "$HUB_TOKEN" ]; then
-            echo "⚠️  Failed to get Docker Hub API Token. Description update will be skipped."
-            HUB_TOKEN="null"
+          # 使用 jq 构建安全的 JSON，防止密码中特殊字符导致错误
+          LOGIN_PAYLOAD=$(jq -n \
+            --arg u "$DOCKER_USER" \
+            --arg p "$DOCKER_PASSWORD" \
+            '{username: $u, password: $p}')
+
+          # 请求登录，分离状态码和响应体
+          LOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Content-Type: application/json" \
+            -d "$LOGIN_PAYLOAD" \
+            https://hub.docker.com/v2/users/login)
+
+          LOGIN_HTTP_CODE=$(echo "$LOGIN_RESPONSE" | tail -n1)
+          LOGIN_BODY=$(echo "$LOGIN_RESPONSE" | sed '$d')
+
+          if [ "$LOGIN_HTTP_CODE" -eq 200 ]; then
+              HUB_TOKEN=$(echo "$LOGIN_BODY" | jq -r .token)
+              echo "✅ API Token obtained successfully."
+          else
+              echo "⚠️  Failed to get API Token (HTTP $LOGIN_HTTP_CODE). Description update will be skipped."
+              echo "Response: $LOGIN_BODY"
+              HUB_TOKEN="null"
           fi
 
+          # -------------------------------------------------------
+          # 定义更新 Docker Hub 说明的函数
+          # -------------------------------------------------------
           update_hub_info() {
               local repo_name="$1"
               local source_img="$2"
               local original_tag="$3"
               local target_img="$4"
               
-              # 1. 准备 Short Description (网页标题下方的短描述)
+              # 准备短描述 (Description)
               local short_desc="Mirror of $source_img ($original_tag)"
 
-              # 2. 准备 Overview (长篇 README Markdown)
+              # 准备长描述 (Overview / README)
               local readme_content="# GHCR Mirror: $repo_name
               
               This repository is a transparent mirror synchronized from GitHub Container Registry (GHCR).
@@ -78,30 +105,34 @@ jobs:
               ---
               *Powered by GitHub Actions*"
 
-              # 3. 构建 JSON (同时包含 description 和 full_description)
+              # 使用 jq 构建 JSON，确保 Markdown 转义正确
               local json_payload=$(jq -n \
                 --arg short "$short_desc" \
                 --arg full "$readme_content" \
                 '{"description": $short, "full_description": $full}')
 
-              echo "📝 Updating Docker Hub Info (Overview & Description) for $repo_name..."
+              echo "📝 Updating Info for $repo_name..."
               
-              HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" -X PATCH \
+              # 发送 PATCH 请求
+              UPDATE_CODE=$(curl -s -o response.json -w "%{http_code}" -X PATCH \
                   -H "Authorization: JWT $HUB_TOKEN" \
                   -H "Content-Type: application/json" \
                   -d "$json_payload" \
                   "https://hub.docker.com/v2/repositories/${DOCKER_USER}/${repo_name}/")
 
-              if [ "$HTTP_CODE" -eq 200 ]; then
-                  echo "✅ Docker Hub info updated successfully."
+              if [ "$UPDATE_CODE" -eq 200 ]; then
+                  echo "✅ Info updated successfully."
               else
-                  echo "❌ Failed to update info. HTTP Code: $HTTP_CODE"
+                  echo "❌ Failed to update info (HTTP $UPDATE_CODE)."
                   echo "🔍 Server Response:"
                   cat response.json
                   echo ""
               fi
           }
 
+          # -------------------------------------------------------
+          # 2. 循环处理镜像
+          # -------------------------------------------------------
           for file in $SOURCE_DIR/*; do
               [ -e "$file" ] || continue
 
@@ -116,14 +147,17 @@ jobs:
                   last_pushed_tag=$(cat "$state_file")
               fi
 
+              # 检查 Tag 是否变更
               if [[ "$image_tag" != "$last_pushed_tag" ]]; then
                   target_repo="${REPO_PREFIX}${base_name}"
                   target_image="docker.io/${DOCKER_USER}/${target_repo}:${image_tag}"
                   
                   echo "🚀 Syncing: $source_image -> $target_image"
                   
+                  # 动态生成 Dockerfile
                   echo "FROM $source_image" > Dockerfile
                   
+                  # 使用 buildx build 强制拉取并重新推送 (解决 400 Bad Request 问题)
                   if docker buildx build \
                       --platform "$PLATFORMS" \
                       --tag "$target_image" \
@@ -131,9 +165,10 @@ jobs:
                       --push \
                       . ; then
                       
-                      echo "✅ Success: $target_image"
+                      echo "✅ Push Success: $target_image"
                       echo "$image_tag" > "$state_file"
 
+                      # 如果获取到了 Token，则更新说明
                       if [ "$HUB_TOKEN" != "null" ]; then
                           update_hub_info "$target_repo" "$source_image" "$image_tag" "$target_image"
                       fi
