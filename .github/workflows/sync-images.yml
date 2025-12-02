@@ -7,7 +7,7 @@ on:
       - main
     paths:
       - 'source_images/*'
-      - '.github/workflows/**'   # <--- 新增：当 Workflow 本身代码修改时也触发
+      - '.github/workflows/**'
 
 jobs:
   push_multiarch_images:
@@ -32,11 +32,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Sync Images & Update README
+      - name: Sync Images & Update Info
         shell: bash
         env:
           DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          # 注意：API 调用需要密码或 Token，这里直接复用 Token
           DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           SOURCE_DIR="source_images"
@@ -46,23 +45,24 @@ jobs:
 
           mkdir -p $STATE_DIR
 
-          # 1. 获取 Docker Hub API Token (用于更新 README)
-          # 注意：Access Token 必须具有 Read & Write 权限
           echo "🔑 Authenticating with Docker Hub API..."
           HUB_TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d "{\"username\": \"$DOCKER_USER\", \"password\": \"$DOCKER_PASSWORD\"}" https://hub.docker.com/v2/users/login | jq -r .token)
           
-          if [ "$HUB_TOKEN" == "null" ]; then
-            echo "⚠️  Failed to get Docker Hub API Token. README update will be skipped."
+          if [ "$HUB_TOKEN" == "null" ] || [ -z "$HUB_TOKEN" ]; then
+            echo "⚠️  Failed to get Docker Hub API Token. Description update will be skipped."
+            HUB_TOKEN="null"
           fi
 
-          # 定义更新 README 的函数
-          update_readme() {
+          update_hub_info() {
               local repo_name="$1"
               local source_img="$2"
               local original_tag="$3"
               local target_img="$4"
               
-              # 生成 Markdown 内容
+              # 1. 准备 Short Description (网页标题下方的短描述)
+              local short_desc="Mirror of $source_img ($original_tag)"
+
+              # 2. 准备 Overview (长篇 README Markdown)
               local readme_content="# GHCR Mirror: $repo_name
               
               This repository is a transparent mirror synchronized from GitHub Container Registry (GHCR).
@@ -78,19 +78,30 @@ jobs:
               ---
               *Powered by GitHub Actions*"
 
-              # 使用 jq 构建 JSON payload (处理换行和转义)
-              local json_payload=$(jq -n --arg desc "$readme_content" '{"full_description": $desc}')
+              # 3. 构建 JSON (同时包含 description 和 full_description)
+              local json_payload=$(jq -n \
+                --arg short "$short_desc" \
+                --arg full "$readme_content" \
+                '{"description": $short, "full_description": $full}')
 
-              # 调用 API 更新
-              echo "📝 Updating README for $repo_name..."
-              curl -s -o /dev/null -X PATCH \
+              echo "📝 Updating Docker Hub Info (Overview & Description) for $repo_name..."
+              
+              HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" -X PATCH \
                   -H "Authorization: JWT $HUB_TOKEN" \
                   -H "Content-Type: application/json" \
                   -d "$json_payload" \
-                  "https://hub.docker.com/v2/repositories/${DOCKER_USER}/${repo_name}/"
+                  "https://hub.docker.com/v2/repositories/${DOCKER_USER}/${repo_name}/")
+
+              if [ "$HTTP_CODE" -eq 200 ]; then
+                  echo "✅ Docker Hub info updated successfully."
+              else
+                  echo "❌ Failed to update info. HTTP Code: $HTTP_CODE"
+                  echo "🔍 Server Response:"
+                  cat response.json
+                  echo ""
+              fi
           }
 
-          # 2. 开始循环处理
           for file in $SOURCE_DIR/*; do
               [ -e "$file" ] || continue
 
@@ -123,9 +134,8 @@ jobs:
                       echo "✅ Success: $target_image"
                       echo "$image_tag" > "$state_file"
 
-                      # === 3. 调用函数更新 README ===
                       if [ "$HUB_TOKEN" != "null" ]; then
-                          update_readme "$target_repo" "$source_image" "$image_tag" "$target_image"
+                          update_hub_info "$target_repo" "$source_image" "$image_tag" "$target_image"
                       fi
                   else
                       echo "❌ Failed to sync $base_name"
