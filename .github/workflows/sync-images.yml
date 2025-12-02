@@ -7,13 +7,14 @@ on:
       - main
     paths:
       - 'source_images/*'
+      - '.github/workflows/**'   # <--- 新增：当 Workflow 本身代码修改时也触发
 
 jobs:
   push_multiarch_images:
     name: Sync amd64/arm64 images
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 允许提交状态文件
+      contents: write
 
     steps:
       - name: Check out the repo
@@ -31,10 +32,12 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Sync Images (Amd64,Arm64)
+      - name: Sync Images & Update README
         shell: bash
         env:
           DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          # 注意：API 调用需要密码或 Token，这里直接复用 Token
+          DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           SOURCE_DIR="source_images"
           STATE_DIR="pushed_state"
@@ -43,6 +46,51 @@ jobs:
 
           mkdir -p $STATE_DIR
 
+          # 1. 获取 Docker Hub API Token (用于更新 README)
+          # 注意：Access Token 必须具有 Read & Write 权限
+          echo "🔑 Authenticating with Docker Hub API..."
+          HUB_TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d "{\"username\": \"$DOCKER_USER\", \"password\": \"$DOCKER_PASSWORD\"}" https://hub.docker.com/v2/users/login | jq -r .token)
+          
+          if [ "$HUB_TOKEN" == "null" ]; then
+            echo "⚠️  Failed to get Docker Hub API Token. README update will be skipped."
+          fi
+
+          # 定义更新 README 的函数
+          update_readme() {
+              local repo_name="$1"
+              local source_img="$2"
+              local original_tag="$3"
+              local target_img="$4"
+              
+              # 生成 Markdown 内容
+              local readme_content="# GHCR Mirror: $repo_name
+              
+              This repository is a transparent mirror synchronized from GitHub Container Registry (GHCR).
+              
+              ## Image Info
+              
+              - **Source Image**: \`$source_img\`
+              - **Original Tag**: \`$original_tag\`
+              - **Mirror Image**: \`$target_img\`
+              - **Architectures**: \`amd64\`, \`arm64\`
+              - **Sync Time**: $(date -u) UTC
+              
+              ---
+              *Powered by GitHub Actions*"
+
+              # 使用 jq 构建 JSON payload (处理换行和转义)
+              local json_payload=$(jq -n --arg desc "$readme_content" '{"full_description": $desc}')
+
+              # 调用 API 更新
+              echo "📝 Updating README for $repo_name..."
+              curl -s -o /dev/null -X PATCH \
+                  -H "Authorization: JWT $HUB_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$json_payload" \
+                  "https://hub.docker.com/v2/repositories/${DOCKER_USER}/${repo_name}/"
+          }
+
+          # 2. 开始循环处理
           for file in $SOURCE_DIR/*; do
               [ -e "$file" ] || continue
 
@@ -63,10 +111,8 @@ jobs:
                   
                   echo "🚀 Syncing: $source_image -> $target_image"
                   
-                  # 创建临时 Dockerfile
                   echo "FROM $source_image" > Dockerfile
                   
-                  # 使用 buildx build 重新构建并推送 (解决 400 错误)
                   if docker buildx build \
                       --platform "$PLATFORMS" \
                       --tag "$target_image" \
@@ -76,6 +122,11 @@ jobs:
                       
                       echo "✅ Success: $target_image"
                       echo "$image_tag" > "$state_file"
+
+                      # === 3. 调用函数更新 README ===
+                      if [ "$HUB_TOKEN" != "null" ]; then
+                          update_readme "$target_repo" "$source_image" "$image_tag" "$target_image"
+                      fi
                   else
                       echo "❌ Failed to sync $base_name"
                       rm -f Dockerfile
