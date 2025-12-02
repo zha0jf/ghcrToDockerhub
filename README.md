@@ -17,6 +17,8 @@
 *   `DOCKERHUB_USERNAME`: 你的 Docker Hub 用户名。
 *   `DOCKERHUB_TOKEN`: 你的 Docker Hub Access Token。
 
+> 注意：在生成DOCKERHUB_TOKEN时，需要给予TOKEN read,write和delete权限。
+
 ## 🚀 使用方法
 
 ### 1. 添加镜像
@@ -37,6 +39,7 @@ Push 代码后，GitHub Actions 会自动：
 2. 提取 `amd64` 和 `arm64` 架构。
 3. 加上 `ghcr-` 前缀推送到你的 Docker Hub。
 4. 记录状态到 `pushed_state/` 防止重复推送。
+5. 自动更新DockerHub中仓库的描述信息，说明是从ghcr中同步过来的映像。
 
 ## ❓ 常见问题
 
